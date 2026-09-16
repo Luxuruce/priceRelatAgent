@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ project.name or '比价报告' }}</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+    --success-text: #006300;
+    --diverge-cool: #2a78d6;
+    --diverge-warm: #d03b3b;
+    --diverge-mid: #f0efec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --series-4: #c98500;
+      --success-text: #0ca30c;
+      --diverge-cool: #3987e5;
+      --diverge-mid: #383835;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --success-text: #0ca30c;
+    --diverge-cool: #3987e5;
+    --diverge-mid: #383835;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--text-primary);
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  header { margin-bottom: 28px; }
+  h1 { margin: 0 0 6px; font-size: 24px; font-weight: 650; letter-spacing: -0.01em; }
+  .sub { color: var(--text-secondary); font-size: 13px; }
+
+  h2 {
+    margin: 36px 0 14px; font-size: 15px; font-weight: 600;
+    color: var(--text-secondary); letter-spacing: 0.02em;
+  }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+
+  /* ---- KPI 统计块 ---- */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .kpi .label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+  .kpi .value { font-size: 28px; font-weight: 640; letter-spacing: -0.02em; line-height: 1.15; }
+  .kpi .note { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+  .value.crit { color: var(--critical); }
+  .value.good { color: var(--success-text); }
+
+  /* ---- 图表 ---- */
+  .charts { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
+  .chart-title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .chart-desc { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
+
+  .hbar { display: grid; grid-template-columns: 96px 1fr 52px; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .hbar .name { font-size: 12px; color: var(--text-secondary); text-align: right; }
+  .hbar .track { position: relative; height: 18px; background: var(--diverge-mid); border-radius: 4px; overflow: hidden; }
+  .hbar .fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+  .hbar .num { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+  .plat { display: grid; grid-template-columns: 72px 1fr auto; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .plat .pname { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .plat .track { height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+  .plat .fill { height: 100%; border-radius: 4px; }
+  .plat .meta { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+
+  /* ---- 表格 ---- */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .toolbar input, .toolbar select {
+    font: inherit; font-size: 13px; padding: 6px 10px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: var(--surface-1); color: var(--text-primary);
+  }
+  .toolbar input { min-width: 230px; }
+  .count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th {
+    position: sticky; top: 0; background: var(--surface-1); z-index: 1;
+    font-size: 11px; font-weight: 600; color: var(--text-muted);
+    letter-spacing: 0.04em; white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .prod-title { font-weight: 500; }
+  .prod-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .pill.critical { color: var(--critical); border-color: var(--critical); }
+  .pill.serious  { color: var(--serious);  border-color: var(--serious); }
+  .pill.good     { color: var(--success-text); border-color: var(--good); }
+  .pill.neutral  { color: var(--text-secondary); border-color: var(--axis); }
+  .pill.muted    { color: var(--text-muted); border-color: var(--grid); }
+
+  .delta.up { color: var(--critical); }
+  .delta.down { color: var(--success-text); }
+
+  .rival { font-size: 12px; margin-bottom: 5px; padding-left: 14px; position: relative; }
+  .rival:last-child { margin-bottom: 0; }
+  .rival .dot { position: absolute; left: 0; top: 6px; width: 8px; height: 8px; border-radius: 2px; }
+  .rival .rprice { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  .rival.miss { color: var(--text-muted); }
+  .flag {
+    display: inline-block; margin-left: 5px; font-size: 10px;
+    padding: 0 5px; border-radius: 3px;
+    border: 1px solid var(--warning); color: var(--text-secondary);
+  }
+  .note { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+  footer { margin-top: 40px; font-size: 12px; color: var(--text-muted); }
+  .empty { padding: 32px; text-align: center; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>{{ project.name or '比价报告' }}</h1>
+  <div class="sub">
+    基准方：{{ project.self_name or '我方' }} ·
+    竞品：{% for c in competitors %}{{ c.name }}{% if not loop.last %} / {% endif %}{% endfor %} ·
+    生成于 {{ generated_at }}
+  </div>
+</header>
+
+<h2>核心指标</h2>
+<div class="kpis">
+  <div class="card kpi">
+    <div class="label">比价商品</div>
+    <div class="value">{{ summary.total }}</div>
+    <div class="note">成功匹配 {{ summary.matched }} 个（{{ '%.0f'|format(summary.match_rate * 100) }}%）</div>
+  </div>
+  <div class="card kpi">
+    <div class="label">我方价格偏高</div>
+    <div class="value{% if summary.higher > summary.lower %} crit{% endif %}">{{ summary.higher }}</div>
+    <div class="note">占可比商品 {{ '%.0f'|format(summary.higher / summary.priced * 100 if summary.priced else 0) }}%</div>
+  </div>
+  <div class="card kpi">
+    <div class="label">我方价格偏低</div>
+    <div class="value good">{{ summary.lower }}</div>
+    <div class="note">存在提价空间</div>
+  </div>
+  <div class="card kpi">
+    <div class="label">平均价差率</div>
+    {% if summary.avg_diff_rate is not none %}
+    <div class="value{% if summary.avg_diff_rate > 0 %} crit{% elif summary.avg_diff_rate < 0 %} good{% endif %}">
+      {{ '%+.1f'|format(summary.avg_diff_rate * 100) }}%
+    </div>
+    <div class="note">正值表示我方更贵</div>
+    {% else %}
+    <div class="value">—</div>
+    <div class="note">无可比数据</div>
+    {% endif %}
+  </div>
+  <div class="card kpi">
+    <div class="label">待人工复核</div>
+    <div class="value">{{ summary.need_review }}</div>
+    <div class="note">匹配置信度偏低</div>
+  </div>
+</div>
+
+<h2>分布与平台概况</h2>
+<div class="charts">
+
+  <div class="card">
+    <div class="chart-title">价差率分布</div>
+    <div class="chart-desc">我方单位价相对竞品基准的偏离程度。右侧（红）= 我方更贵，左侧（蓝）= 我方更便宜。</div>
+    {% set maxbin = summary.histogram.counts | max %}
+    {% for label in summary.histogram.labels %}
+      {% set val = summary.histogram.counts[loop.index0] %}
+      {% set is_high = loop.index0 > 3 %}
+      {% set is_mid = loop.index0 == 3 %}
+      <div class="hbar">
+        <div class="name">{{ label }}</div>
+        <div class="track">
+          <div class="fill" style="
+            left: 0; width: {{ (val / maxbin * 100) if maxbin else 0 }}%;
+            background: {% if is_mid %}var(--axis){% elif is_high %}var(--diverge-warm){% else %}var(--diverge-cool){% endif %};
+            {% if val == 0 %}display:none;{% endif %}"></div>
+        </div>
+        <div class="num">{{ val }}</div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="card">
+    <div class="chart-title">各竞品平台</div>
+    <div class="chart-desc">条形长度为商品匹配率；右侧数字为该平台的平均价差率。</div>
+    {% set series = ['var(--series-1)','var(--series-2)','var(--series-3)','var(--series-4)'] %}
+    {% for p in summary.per_platform %}
+      {% set color = series[loop.index0 % 4] %}
+      <div class="plat">
+        <div class="pname">
+          <span class="swatch" style="background: {{ color }}"></span>{{ p.name }}
+        </div>
+        <div class="track">
+          <div class="fill" style="width: {{ p.match_rate * 100 }}%; background: {{ color }}"></div>
+        </div>
+        <div class="meta">
+          {{ p.matched }}/{{ p.total }}
+          {%- if p.avg_diff_rate is not none %}
+            · <span class="delta {{ 'up' if p.avg_diff_rate > 0 else 'down' }}">{{ '%+.1f'|format(p.avg_diff_rate * 100) }}%</span>
+          {%- endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+</div>
+
+<h2>最该调价的商品 · TOP {{ top_rows|length }}</h2>
+<div class="tablewrap">
+  <table>
+    <thead>
+      <tr>
+        <th>商品</th>
+        <th class="num">我方单位价</th>
+        <th class="num">基准单位价</th>
+        <th class="num">价差率</th>
+        <th>建议</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in top_rows %}
+      <tr>
+        <td>
+          <div class="prod-title">{{ r.title }}</div>
+          <div class="prod-meta">{{ r.spec }}{% if r.brand %} · {{ r.brand }}{% endif %}</div>
+        </td>
+        <td class="num">{% if r.unit_price is not none %}{{ '%.2f'|format(r.unit_price) }}<br><span class="prod-meta">{{ r.unit_label }}</span>{% else %}{{ '%.2f'|format(r.price) if r.price else '—' }}{% endif %}</td>
+        <td class="num">
+          {%- if r.benchmark_unit_price is not none %}{{ '%.2f'|format(r.benchmark_unit_price) }}
+          {%- elif r.benchmark_price is not none %}{{ '%.2f'|format(r.benchmark_price) }}
+          {%- else %}—{% endif %}
+        </td>
+        <td class="num"><span class="delta {{ 'up' if r.diff_rate > 0 else 'down' }}">{{ '%+.1f'|format(r.diff_rate * 100) }}%</span></td>
+        <td><span class="pill {{ r.action_kind }}">{{ r.action }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>全部比价明细</h2>
+<div class="toolbar">
+  <input type="search" id="q" placeholder="搜索商品名称 / 品牌…" aria-label="搜索商品">
+  <select id="fAction" aria-label="按建议动作筛选">
+    <option value="">全部建议</option>
+    {% for action, n in summary.by_action.items() %}
+    <option value="{{ action }}">{{ action }}（{{ n }}）</option>
+    {% endfor %}
+  </select>
+  <select id="fCat" aria-label="按品类筛选">
+    <option value="">全部品类</option>
+  </select>
+  <select id="fReview" aria-label="按复核状态筛选">
+    <option value="">不限复核状态</option>
+    <option value="1">仅看待复核</option>
+  </select>
+  <span class="count" id="count"></span>
+</div>
+
+<div class="tablewrap">
+  <table>
+    <thead>
+      <tr>
+        <th>我方商品</th>
+        <th class="num">我方价</th>
+        <th>竞品匹配与价格</th>
+        <th class="num">价差率</th>
+        <th>建议</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div class="empty" id="empty" hidden>没有符合条件的商品</div>
+</div>
+
+<footer>
+  匹配层级：L1-条码 / L1-品牌规格为硬规则命中，L2-模糊为文本相似度，L3-AI判定为模型裁决。
+  标注「待复核」的匹配关系置信度偏低，建议人工确认后再执行调价。
+  价差率基于折算后的单位价计算；规格无法解析的商品降级为标价对比，已在明细中标注。
+</footer>
+
+</div>
+
+<script>
+const ROWS = {{ rows_json|safe }};
+const SERIES = ['var(--series-1)','var(--series-2)','var(--series-3)','var(--series-4)'];
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = (n, d = 2) => n === null || n === undefined ? '—' : n.toFixed(d);
+
+// 品类下拉按实际数据生成
+const cats = [...new Set(ROWS.map(r => r.category))].sort();
+$('fCat').insertAdjacentHTML('beforeend',
+  cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join(''));
+
+function rivalHtml(rivals) {
+  return rivals.map((v, i) => {
+    if (!v.matched) {
+      return `<div class="rival miss"><span class="dot" style="background:var(--grid)"></span>`
+           + `${esc(v.name)}：未匹配</div>`;
+    }
+    const flag = v.need_review ? '<span class="flag">待复核</span>' : '';
+    const unit = v.unit_price !== null && v.unit_price !== undefined
+      ? `（${fmt(v.unit_price)}/单位）` : '';
+    return `<div class="rival">
+      <span class="dot" style="background:${SERIES[i % 4]}"></span>
+      ${esc(v.name)}：<span class="rprice">¥${fmt(v.price)} ${unit}</span>${flag}
+      <div class="note">${esc(v.title)} · ${esc(v.spec)} · ${esc(v.level)} ${v.score}分</div>
+    </div>`;
+  }).join('');
+}
+
+function render(list) {
+  $('tbody').innerHTML = list.map(r => {
+    const rate = r.diff_rate === null || r.diff_rate === undefined
+      ? '<span class="prod-meta">—</span>'
+      : `<span class="delta ${r.diff_rate > 0 ? 'up' : 'down'}">`
+        + `${r.diff_rate > 0 ? '+' : ''}${(r.diff_rate * 100).toFixed(1)}%</span>`;
+    const unitLine = r.unit_price !== null && r.unit_price !== undefined
+      ? `<br><span class="prod-meta">${fmt(r.unit_price)} ${esc(r.unit_label)}</span>` : '';
+    const notes = r.notes.length
+      ? `<div class="note">${r.notes.map(esc).join(' · ')}</div>` : '';
+    return `<tr>
+      <td>
+        <div class="prod-title">${esc(r.title)}</div>
+        <div class="prod-meta">${esc(r.spec)}${r.brand ? ' · ' + esc(r.brand) : ''} · ${esc(r.category)}</div>
+        ${notes}
+      </td>
+      <td class="num">¥${fmt(r.price)}${unitLine}</td>
+      <td>${rivalHtml(r.rivals)}</td>
+      <td class="num">${rate}</td>
+      <td><span class="pill ${r.action_kind}">${esc(r.action)}</span></td>
+    </tr>`;
+  }).join('');
+
+  $('empty').hidden = list.length > 0;
+  $('count').textContent = `显示 ${list.length} / ${ROWS.length} 个商品`;
+}
+
+function apply() {
+  const q = $('q').value.trim().toLowerCase();
+  const action = $('fAction').value;
+  const cat = $('fCat').value;
+  const review = $('fReview').value;
+
+  render(ROWS.filter(r => {
+    if (q && !(r.title + ' ' + r.brand).toLowerCase().includes(q)) return false;
+    if (action && r.action !== action) return false;
+    if (cat && r.category !== cat) return false;
+    if (review && !r.rivals.some(v => v.matched && v.need_review)) return false;
+    return true;
+  }));
+}
+
+['q', 'fAction', 'fCat', 'fReview'].forEach(id => {
+  $(id).addEventListener('input', apply);
+});
+apply();
+</script>
+</body>
+</html>

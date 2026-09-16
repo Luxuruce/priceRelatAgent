@@ -1,0 +1,10 @@
+# 核心
+pandas>=2.2
+rapidfuzz>=3.9
+jinja2>=3.1
+pyyaml>=6.0
+openpyxl>=3.1
+requests>=2.32
+
+# 可选：LLM 兜底匹配（未配置 API Key 时自动降级，不影响主流程）
+anthropic>=0.40
