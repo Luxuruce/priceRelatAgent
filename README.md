@@ -13,6 +13,9 @@
 交给影刀 / UiPath / 八爪鱼这类成熟工具更划算。项目只定义数据契约，
 换任何采集工具下游都不用改。详见 [采集数据契约](docs/ingest-contract.md)。
 
+不想装客户端的，可以用云采集工具（八爪鱼云采集 / Apify / Firecrawl）或数据服务商接口，
+配置 `config.yaml` 的 `ingest.cloud` 后 `run.py fetch` 拉取即可。
+
 **比价必须落在单位价上。** `500ml×6` 和 `1.5L` 的标价没有可比性。
 系统从标题解析净含量与件数，统一折算成「元/100g」「元/100ml」「元/件」再对比。
 解析不出来的降级为标价对比，并在报告中显式标注。
@@ -90,6 +93,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 | `run.py compare` | 导入 + 匹配 + 比价 + 生成报告（最常用） |
 | `run.py serve` | 启动 HTTP 服务接收 RPA 推送 |
 | `run.py trigger --robot <UUID>` | 触发影刀机器人任务 |
+| `run.py fetch [--source <名称>]` | 从云采集 API 拉取数据到 inbox |
+| `run.py compare --fetch` | 先拉取云采集数据再比价 |
 
 加 `-v` 看详细日志，加 `-c <路径>` 指定配置文件。
 
@@ -124,7 +129,8 @@ src/pricerelat/
 │   ├── base.py              数据契约、字段映射、标准化
 │   ├── file_collector.py    方式A：文件落盘（CSV/Excel/JSON）
 │   ├── http_server.py       方式B：HTTP 回调接收
-│   └── yingdao.py           方式C：影刀 OpenAPI 触发
+│   ├── yingdao.py           方式C：影刀 OpenAPI 触发
+│   └── cloud_api.py         方式D：云采集 API（八爪鱼 / Apify / Firecrawl / 数据服务商）
 ├── normalize/             标准化层
 │   ├── spec_parser.py       规格解析与单位折算
 │   └── text.py              标题清洗、品牌/品类/口味/产品线识别
