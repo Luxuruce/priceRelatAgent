@@ -37,6 +37,77 @@ ingest:
     poll_interval_sec: 10
     poll_timeout_sec: 1800
 
+  # D. 云采集 API：八爪鱼云采集 / Apify / Firecrawl / 数据服务商，免安装、云端运行
+  #    python run.py fetch                 拉取所有 enabled 的数据源到 inbox
+  #    python run.py fetch --source <名称>  单独执行某个数据源（忽略 enabled，调试用）
+  #    python run.py compare --fetch       先拉取再比价
+  #
+  #    ${NAME} 先取该数据源 vars 里的值，取不到再读环境变量。密钥一律用环境变量，不要明文写这里。
+  #    field_map 把源数据字段映射到标准字段（支持 a.b.0.c 点路径）；
+  #    源数据已经用「商品标题 / 售价 / title / price」这类常见表头的，可以不写映射。
+  #
+  #    提醒：云采集工具抓的是网页。山姆、盒马这类价格主要在 APP / 小程序里的平台，
+  #    更适合影刀（方式 C）或直接对接数据服务商（见下方通用模式示例）。
+  cloud:
+    # --- 八爪鱼云采集：先在八爪鱼里配好任务并开启云采集，这里只负责导出结果 ---
+    # 环境变量：BAZHUAYU_USERNAME / BAZHUAYU_PASSWORD
+    # ⚠ 预设里的导出 url 与 items_path 未能从公开文档核实，首次使用请对照
+    #   https://openapi.bazhuayu.com/zh-CN/ 核对，不一致在这里覆盖 url / items_path
+    - name: "rtmart-bazhuayu"
+      enabled: false
+      platform: "rtmart"
+      preset: "bazhuayu"
+      vars:
+        task_id: ""            # 八爪鱼任务 ID
+      field_map: {}            # 按八爪鱼任务里定义的字段名填写，如 title: "商品名"
+
+    # --- Apify：拉取某次 Actor 运行产出的 Dataset ---
+    # 环境变量：APIFY_TOKEN
+    - name: "walmart-apify"
+      enabled: false
+      platform: "walmart"
+      preset: "apify"
+      vars:
+        dataset_id: ""         # Apify 控制台 → Storage → Datasets
+      field_map:               # 示例，按所用 Actor 的实际输出调整
+        sku_id: "productId"
+        title: "name"
+        price: "price.current"
+
+    # --- Firecrawl：给定列表页 URL，云端渲染后按 schema 抽取商品 ---
+    # 环境变量：FIRECRAWL_API_KEY
+    # 默认 schema 已使用标准字段名，无需 field_map；拿不到商品编码时按链接/标题自动生成
+    - name: "rtmart-firecrawl"
+      enabled: false
+      platform: "rtmart"
+      preset: "firecrawl"
+      urls: []                 # 商品列表页或详情页 URL，每个 URL 调用一次
+
+    # --- 通用模式：数据服务商或自建接口，不用预设，全部自己配 ---
+    - name: "freshhema-vendor"
+      enabled: false
+      platform: "freshhema"
+      mode: "list"             # list=拉取结果集 | scrape=逐 URL 抽取
+      method: "GET"
+      url: "https://api.example.com/v1/products"
+      headers:
+        Authorization: "Bearer ${VENDOR_API_KEY}"
+      params:
+        city: "上海"
+      items_path: "data.items" # 数据列表在响应 JSON 里的位置，空串表示响应本身就是数组
+      pagination:
+        type: "page"           # none | offset | page | cursor
+        page_param: "page"
+        limit_param: "page_size"
+        page_size: 100
+        # offset 分页可用：offset_param / next_offset_path（服务端给下一页 offset）
+        # cursor 分页可用：cursor_param / cursor_path（下一页游标在响应里的位置）
+        # 通用可选：remaining_path（剩余条数，≤0 即停止）/ in: body（分页参数放请求体）
+      field_map: {}
+      timeout_sec: 60
+      retries: 3               # 429 / 5xx / 网络错误的重试次数
+      max_pages: 200           # 分页上限，防止接口异常导致死循环
+
 # ------------------------------------------------------------
 # 竞品平台
 # ------------------------------------------------------------

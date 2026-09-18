@@ -4,6 +4,7 @@
     python run.py compare   # 匹配 + 比价 + 生成报告（最常用）
     python run.py serve     # 启动 HTTP 回调服务，接收 RPA 推送
     python run.py trigger   # 调影刀 OpenAPI 触发机器人任务
+    python run.py fetch     # 从云采集 API（八爪鱼 / Apify / Firecrawl 等）拉取数据
     python run.py demo      # 用样例数据跑通全流程
 """
 
@@ -121,6 +122,10 @@ def cmd_collect(args, cfg: dict) -> int:
 
 
 def cmd_compare(args, cfg: dict) -> int:
+    if getattr(args, "fetch", False) and cmd_fetch(args, cfg) != 0:
+        # 部分数据源失败不阻断比价：失败平台会在匹配阶段显示「无商品数据，跳过」
+        logger.warning("部分云采集数据源拉取失败，继续使用 inbox 中已有的数据比价")
+
     self_products, rivals = collect_all(cfg)
 
     if not self_products:
@@ -215,6 +220,52 @@ def cmd_trigger(args, cfg: dict) -> int:
     return 0
 
 
+def cmd_fetch(args, cfg: dict) -> int:
+    from .ingest.cloud_api import CloudSource, CloudSourceError
+
+    i_cfg = cfg.get("ingest", {})
+    sources = i_cfg.get("cloud") or []
+    wanted = getattr(args, "source", None)
+
+    if wanted:
+        # 显式点名的数据源即使 enabled: false 也执行，方便单独调试
+        selected = [s for s in sources if s.get("name") == wanted]
+        if not selected:
+            names = ", ".join(str(s.get("name")) for s in sources) or "（无）"
+            print(f"错误：未找到数据源 {wanted!r}，已配置：{names}", file=sys.stderr)
+            return 1
+    else:
+        selected = [s for s in sources if s.get("enabled")]
+        if not selected:
+            print("没有启用的云采集数据源。在 config.yaml 的 ingest.cloud 下设置 enabled: true，"
+                  "或用 --source <名称> 单独执行。")
+            return 0
+
+    known_platforms = {SELF_PLATFORM} | {c["key"] for c in cfg.get("competitors", [])}
+    inbox = _resolve(i_cfg.get("inbox_dir", "data/inbox"))
+    failed = 0
+
+    for source_cfg in selected:
+        name = source_cfg.get("name", "?")
+        if source_cfg.get("platform") not in known_platforms:
+            logger.warning(
+                "[%s] platform=%r 不在 competitors 中，拉回的数据不会参与比价",
+                name, source_cfg.get("platform"),
+            )
+        try:
+            path, count = CloudSource(source_cfg, inbox).fetch_to_inbox()
+        except CloudSourceError as e:
+            failed += 1
+            logger.error("%s", e)
+            continue
+        print(f"  {name}: {count} 条" + (f" → {path.name}" if path else ""))
+
+    if failed:
+        print(f"\n{failed}/{len(selected)} 个数据源拉取失败，详见上方日志", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_demo(args, cfg: dict) -> int:
     """把样例数据复制进 inbox 后跑完整流程，用于验证安装。"""
     samples = _resolve("data/samples")
@@ -243,8 +294,12 @@ def main(argv: list[str] | None = None) -> int:
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("collect", help="从 inbox 导入 RPA 采集结果并统计")
-    sub.add_parser("compare", help="匹配 + 比价 + 生成报告")
+    p_compare = sub.add_parser("compare", help="匹配 + 比价 + 生成报告")
+    p_compare.add_argument("--fetch", action="store_true", help="比价前先从云采集 API 拉取数据")
     sub.add_parser("demo", help="用样例数据跑通全流程")
+
+    p_fetch = sub.add_parser("fetch", help="从云采集 API 拉取数据到 inbox")
+    p_fetch.add_argument("--source", help="只执行指定名称的数据源（忽略 enabled）")
 
     p_serve = sub.add_parser("serve", help="启动 HTTP 回调服务接收 RPA 推送")
     p_serve.add_argument("--host", help="监听地址")
@@ -262,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         "compare": cmd_compare,
         "serve": cmd_serve,
         "trigger": cmd_trigger,
+        "fetch": cmd_fetch,
         "demo": cmd_demo,
     }
     return handlers[args.command](args, cfg)
