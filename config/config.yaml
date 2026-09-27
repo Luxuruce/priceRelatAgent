@@ -159,9 +159,33 @@ matching:
     max_concurrency: 4
     accept_confidence: 0.7     # LLM 置信度低于此值转人工复核
 
-  # 人工复核：低置信匹配导出成单独清单，对应原方案的「人工2次确认」
+  # 人工复核：待复核匹配写入飞书多维表格，人工结论在下次运行前回写关系库。
+  # 多维表格不可用时导出本地 CSV，在「人工确认」列填 确认 / 否决 / 改配 也能回写。
   review:
     export_path: "data/output/待人工复核.csv"
+    bitable:
+      enabled: true
+      # 复核表所在多维表格的 base_token；留空则读环境变量 FEISHU_REVIEW_BASE_TOKEN，
+      # 两者都没有时不同步多维表格，只导出本地 CSV
+      base_token: ""
+      table: "匹配复核"
+      # 写入身份：试点期 user（个人身份，需先 lark-cli auth login）；推广前改为 bot（自建应用）
+      identity: "user"
+
+# ------------------------------------------------------------
+# 匹配关系库：确认过的匹配沉淀下来，下期直接复用
+# ------------------------------------------------------------
+store:
+  enabled: true                # false = 每次从零匹配（V1 行为）
+  path: "data/state/pricerelat.db"
+  # 已确认的竞品 SKU 连续缺席几期（ISO 周）后置为「失效」并重新匹配
+  invalid_after_periods: 3
+
+# ------------------------------------------------------------
+# 匹配评测：run.py evaluate，调阈值 / 规则 / 模型前后各跑一次对比
+# ------------------------------------------------------------
+evaluate:
+  set_path: "data/eval/评测集.csv"
 
 # ------------------------------------------------------------
 # 比价规则
@@ -183,3 +207,9 @@ report:
   output_dir: "data/output"
   html_name: "比价报告.html"
   top_n: 20                    # 报告中价差 TOP N
+  # 本期比价结果写入复核表所在的多维表格（共用 matching.review.bitable 的 token 与身份），
+  # 每次运行整表替换为最新一期，供仪表盘展示
+  bitable:
+    enabled: true
+    results_table: "比价结果"
+    platform_table: "平台价差"

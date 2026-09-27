@@ -215,7 +215,7 @@
   <div class="card kpi">
     <div class="label">待人工复核</div>
     <div class="value">{{ summary.need_review }}</div>
-    <div class="note">匹配置信度偏低</div>
+    <div class="note">其中 {{ summary.tentative }} 个产出待确认建议</div>
   </div>
 </div>
 
@@ -269,6 +269,7 @@
 </div>
 
 <h2>最该调价的商品 · TOP {{ top_rows|length }}</h2>
+<p class="prod-meta">仅含正式建议：跟价基准全部来自已确认的匹配。</p>
 <div class="tablewrap">
   <table>
     <thead>
@@ -301,6 +302,36 @@
   </table>
 </div>
 
+{% if tentative_rows %}
+<h2>待确认建议 · {{ tentative_rows|length }} 个</h2>
+<p class="prod-meta">这些商品的跟价基准依赖尚未人工确认的匹配，不进入高优清单。匹配确认后下次运行自动转为正式建议，被否决则重新计算基准。</p>
+<div class="tablewrap">
+  <table>
+    <thead>
+      <tr>
+        <th>商品</th>
+        <th class="num">价差率</th>
+        <th>建议（待确认）</th>
+        <th>依赖的待复核匹配</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in tentative_rows %}
+      <tr>
+        <td>
+          <div class="prod-title">{{ r.title }}</div>
+          <div class="prod-meta">{{ r.spec }}{% if r.brand %} · {{ r.brand }}{% endif %}</div>
+        </td>
+        <td class="num">{% if r.diff_rate is not none %}<span class="delta {{ 'up' if r.diff_rate > 0 else 'down' }}">{{ '%+.1f'|format(r.diff_rate * 100) }}%</span>{% else %}—{% endif %}</td>
+        <td><span class="pill {{ r.action_kind }}">{{ r.action }}</span></td>
+        <td class="prod-meta">{% for d in r.depends_on %}{{ d }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <h2>全部比价明细</h2>
 <div class="toolbar">
   <input type="search" id="q" placeholder="搜索商品名称 / 品牌…" aria-label="搜索商品">
@@ -316,6 +347,7 @@
   <select id="fReview" aria-label="按复核状态筛选">
     <option value="">不限复核状态</option>
     <option value="1">仅看待复核</option>
+    <option value="tentative">仅看待确认建议</option>
   </select>
   <span class="count" id="count"></span>
 </div>
@@ -366,7 +398,7 @@ function rivalHtml(rivals) {
     }
     const flag = v.need_review ? '<span class="flag">待复核</span>' : '';
     const unit = v.unit_price !== null && v.unit_price !== undefined
-      ? `（${fmt(v.unit_price)}/单位）` : '';
+      ? `（${fmt(v.unit_price)} ${esc(v.unit_label)}）` : '';
     return `<div class="rival">
       <span class="dot" style="background:${SERIES[i % 4]}"></span>
       ${esc(v.name)}：<span class="rprice">¥${fmt(v.price)} ${unit}</span>${flag}
@@ -394,7 +426,7 @@ function render(list) {
       <td class="num">¥${fmt(r.price)}${unitLine}</td>
       <td>${rivalHtml(r.rivals)}</td>
       <td class="num">${rate}</td>
-      <td><span class="pill ${r.action_kind}">${esc(r.action)}</span></td>
+      <td><span class="pill ${r.action_kind}">${esc(r.action)}</span>${r.formal ? '' : '<br><span class="flag">待确认</span>'}</td>
     </tr>`;
   }).join('');
 
@@ -412,7 +444,8 @@ function apply() {
     if (q && !(r.title + ' ' + r.brand).toLowerCase().includes(q)) return false;
     if (action && r.action !== action) return false;
     if (cat && r.category !== cat) return false;
-    if (review && !r.rivals.some(v => v.matched && v.need_review)) return false;
+    if (review === '1' && !r.rivals.some(v => v.matched && v.need_review)) return false;
+    if (review === 'tentative' && r.formal) return false;
     return true;
   }));
 }

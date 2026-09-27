@@ -220,6 +220,7 @@ def adjudicate(
                         reason=f"AI 判定不匹配：{v.get('reason', '')}",
                         # 低置信的「不匹配」也值得人工看一眼，避免漏配
                         need_review=confidence < accept_confidence,
+                        candidate=b if confidence < accept_confidence else None,
                     )
                 )
                 continue

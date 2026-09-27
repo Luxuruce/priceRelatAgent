@@ -2,8 +2,8 @@
 
 报告要回答采购最关心的三个问题：
     1. 我方有多少商品比竞品贵？贵多少？
-    2. 哪些商品最该立刻调价？
-    3. 匹配关系可信吗？哪些需要人工看一眼？
+    2. 哪些商品最该立刻调价？（只列正式建议）
+    3. 匹配关系可信吗？哪些需要人工看一眼？哪些建议等匹配确认后才能执行？
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from ..compare.engine import pair_diff_rate
 from ..models import Action, CompareRow
 
 _TEMPLATE_DIR = Path(__file__).parent
@@ -27,7 +28,8 @@ def _summarize(rows: list[CompareRow], competitors: list[dict]) -> dict:
 
     higher = [r for r in priced if r.diff_rate > 0]
     lower = [r for r in priced if r.diff_rate < 0]
-    need_review = [r for r in rows if "存在待复核的匹配关系" in r.notes]
+    need_review = [r for r in rows if any(p.need_review for p in r.rivals.values())]
+    tentative = [r for r in rows if not r.formal]
 
     by_action: dict[str, int] = {}
     for r in rows:
@@ -44,17 +46,9 @@ def _summarize(rows: list[CompareRow], competitors: list[dict]) -> dict:
             pair = r.rivals.get(key)
             if not (pair and pair.matched):
                 continue
-            sp, rp = r.self_product, pair.rival_product
-            if rp.price is None or sp.price is None:
-                continue
-            if (
-                sp.unit_price is not None
-                and rp.unit_price is not None
-                and sp.spec.unit is rp.spec.unit
-            ):
-                rates.append((sp.unit_price - rp.unit_price) / rp.unit_price)
-            else:
-                rates.append((sp.price - rp.price) / rp.price)
+            rate = pair_diff_rate(r.self_product, pair.rival_product)
+            if rate is not None:
+                rates.append(rate)
         per_platform.append(
             {
                 "key": key,
@@ -87,6 +81,7 @@ def _summarize(rows: list[CompareRow], competitors: list[dict]) -> dict:
         "higher": len(higher),
         "lower": len(lower),
         "need_review": len(need_review),
+        "tentative": len(tentative),
         "avg_diff_rate": (
             sum(r.diff_rate for r in priced) / len(priced) if priced else None
         ),
@@ -100,6 +95,11 @@ def _summarize(rows: list[CompareRow], competitors: list[dict]) -> dict:
 def _row_payload(row: CompareRow, competitors: list[dict]) -> dict:
     """把 CompareRow 摊平成模板和前端筛选都好用的扁平结构。"""
     sp = row.self_product
+    names = {c["key"]: c["name"] for c in competitors}
+    depends_on = []
+    for key in row.depends_on:
+        rp = row.rivals[key].rival_product
+        depends_on.append(f"{names.get(key, key)}：{rp.title}（{rp.sku_id}）")
     rivals = []
     for c in competitors:
         pair = row.rivals.get(c["key"])
@@ -112,6 +112,7 @@ def _row_payload(row: CompareRow, competitors: list[dict]) -> dict:
                     "title": rp.title,
                     "price": rp.price,
                     "unit_price": rp.unit_price,
+                    "unit_label": rp.unit_price_label,
                     "spec": rp.spec.display(),
                     "level": pair.level.value,
                     "score": round(pair.score, 1),
@@ -149,6 +150,9 @@ def _row_payload(row: CompareRow, competitors: list[dict]) -> dict:
         "comparable": row.comparable,
         "notes": row.notes,
         "rivals": rivals,
+        "tier": row.tier.value,
+        "formal": row.formal,
+        "depends_on": depends_on,
     }
 
 
@@ -175,13 +179,18 @@ def render(
     payload = [_row_payload(r, competitors) for r in rows]
     summary = _summarize(rows, competitors)
 
-    # 价差 TOP N：按「我方贵出多少」降序，这是最该调价的一批
+    # 价差 TOP N：按「我方贵出多少」降序，这是最该调价的一批。只取正式建议
     top_n = r_cfg.get("top_n", 20)
     top_rows = sorted(
-        [p for p in payload if p["diff_rate"] is not None],
+        [p for p in payload if p["diff_rate"] is not None and p["formal"]],
         key=lambda p: p["diff_rate"],
         reverse=True,
     )[:top_n]
+    tentative_rows = sorted(
+        [p for p in payload if not p["formal"]],
+        key=lambda p: p["diff_rate"] if p["diff_rate"] is not None else float("-inf"),
+        reverse=True,
+    )
 
     env = Environment(
         loader=FileSystemLoader(_TEMPLATE_DIR),
@@ -195,6 +204,7 @@ def render(
         summary=summary,
         rows=payload,
         top_rows=top_rows,
+        tentative_rows=tentative_rows,
         rows_json=json.dumps(payload, ensure_ascii=False),
         summary_json=json.dumps(summary, ensure_ascii=False),
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),

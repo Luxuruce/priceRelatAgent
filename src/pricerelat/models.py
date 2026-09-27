@@ -19,8 +19,24 @@ class Unit(str, Enum):
 
     WEIGHT = "weight"   # 归一到克
     VOLUME = "volume"   # 归一到毫升
-    COUNT = "count"     # 归一到件
+    COUNT = "count"     # 归一到件（或内含量单位，见 Spec.content_unit）
     UNKNOWN = "unknown"
+
+
+# 数量通常上百的内含量单位，单位价按每 100 折算（元/100抽），其余按每 1（元/卷）
+PER_100_CONTENT_UNITS = ("抽", "张")
+
+
+def same_measure(a: "Spec", b: "Spec") -> bool:
+    """两个规格是否可按单位价比较：都已解析，且可比口径一致。"""
+    return a.parsed and b.parsed and a.measure_key == b.measure_key
+
+
+def measure_mismatch_note(a: "Spec", b: "Spec") -> str:
+    """口径不一致的原因描述，供报告备注和匹配依据使用。"""
+    if a.unit is not b.unit:
+        return f"单位类别不同（{a.unit.value} vs {b.unit.value}）"
+    return f"计数单位不同（{a.count_label} vs {b.count_label}）"
 
 
 class MatchLevel(str, Enum):
@@ -34,6 +50,24 @@ class MatchLevel(str, Enum):
     NONE = "未匹配"
 
 
+class RelationStatus(str, Enum):
+    """匹配关系在关系库中的状态。只有「已确认」的关系能产出正式调价建议。"""
+
+    CONFIRMED = "已确认"
+    REJECTED = "已否决"
+    PENDING = "待复核"
+    INVALID = "失效"
+
+
+class ReviewReason(str, Enum):
+    """进入人工复核的原因，写入复核表供专员判断优先级。"""
+
+    GRAY_ZONE = "灰区"
+    AI_LOW_CONFIDENCE = "AI 低置信"
+    AI_UNCONFIRMED = "AI 判定待确认"
+    INFO_CHANGED = "商品信息变更"
+
+
 class Action(str, Enum):
     """比价结论给出的建议动作。"""
 
@@ -44,12 +78,23 @@ class Action(str, Enum):
     NO_DATA = "数据不足"
 
 
+class SuggestionTier(str, Enum):
+    """建议可信度。待确认建议依赖尚未人工确认的匹配，不进入高优清单。"""
+
+    FORMAL = "正式"
+    TENTATIVE = "待确认"
+
+
 @dataclass
 class Spec:
     """从商品标题解析出的规格。
 
     净含量统一折算到基准单位：重量→克，体积→毫升，计数→件。
     total_base = qty_base * count，即整个包装的总量。
+
+    计数类再细分内含量单位（content_unit）：纸品的「150抽×24包」总量是 3600 抽，
+    而不是 24 件。抽数和张数、和普通件数之间不能互相折算，比价前必须先判断
+    measure_key 是否一致。
     """
 
     raw: str = ""                    # 原始规格文本，如 "500ml*6瓶"
@@ -59,18 +104,39 @@ class Spec:
     qty_base: float | None = None    # 单件净含量折算到基准单位，如 500.0 (ml)
     count: int = 1                   # 件数/包数，如 6
     total_base: float | None = None  # 整包总量 = qty_base * count
+    content_unit: str = ""           # 计数类的内含量单位：抽/张/片/粒/卷；普通件数为空
 
     @property
     def parsed(self) -> bool:
         return self.total_base is not None and self.total_base > 0
 
+    @property
+    def measure_key(self) -> tuple[Unit, str]:
+        """可比口径。两个规格只有 measure_key 相同，单位价才有可比性。"""
+        return (self.unit, self.content_unit if self.unit is Unit.COUNT else "")
+
+    @property
+    def count_label(self) -> str:
+        """计数类的单位名，普通件数显示为「件」。"""
+        return self.content_unit or "件"
+
+    @property
+    def price_base(self) -> float:
+        """单位价的折算基数：重量/体积每 100g、100ml；抽/张每 100；其余每 1。"""
+        if self.unit is Unit.COUNT:
+            return 100.0 if self.content_unit in PER_100_CONTENT_UNITS else 1.0
+        return 100.0
+
     def display(self) -> str:
         """人类可读的规格描述，一律用折算后的基准单位，避免 1000mg 显示成 1000g。"""
         if not self.parsed:
             return self.raw or "未解析"
-        suffix = {Unit.WEIGHT: "g", Unit.VOLUME: "ml", Unit.COUNT: "件"}[self.unit]
         if self.unit is Unit.COUNT:
-            return f"{self.total_base:g}件"
+            label = self.count_label
+            if self.content_unit and self.count > 1:
+                return f"{self.qty_base:g}{label}×{self.count} (合计{self.total_base:g}{label})"
+            return f"{self.total_base:g}{label}"
+        suffix = {Unit.WEIGHT: "g", Unit.VOLUME: "ml"}[self.unit]
         if self.count > 1:
             return f"{self.qty_base:g}{suffix}×{self.count} (合计{self.total_base:g}{suffix})"
         return f"{self.total_base:g}{suffix}"
@@ -108,24 +174,24 @@ class Product:
     def unit_price(self) -> float | None:
         """折算后的可比单位价。
 
-        重量类 → 元/100g，体积类 → 元/100ml，计数类 → 元/件。
+        重量类 → 元/100g，体积类 → 元/100ml，计数类 → 元/件、元/100抽、元/卷 等。
         规格未解析出来时返回 None，调用方需降级为比标价。
         """
         if self.price is None or not self.spec.parsed:
             return None
-        total = self.spec.total_base
-        if self.spec.unit is Unit.COUNT:
-            return self.price / total
-        # 重量/体积折算到每 100 基准单位
-        return self.price / total * 100
+        return self.price / self.spec.total_base * self.spec.price_base
 
     @property
     def unit_price_label(self) -> str:
-        return {
-            Unit.WEIGHT: "元/100g",
-            Unit.VOLUME: "元/100ml",
-            Unit.COUNT: "元/件",
-        }.get(self.spec.unit, "—")
+        spec = self.spec
+        if spec.unit is Unit.WEIGHT:
+            return "元/100g"
+        if spec.unit is Unit.VOLUME:
+            return "元/100ml"
+        if spec.unit is Unit.COUNT:
+            base = "100" if spec.price_base == 100 else ""
+            return f"元/{base}{spec.count_label}"
+        return "—"
 
     @property
     def uid(self) -> str:
@@ -150,9 +216,27 @@ class MatchPair:
     reason: str = ""                 # 匹配依据，人工复核时看这个
     need_review: bool = False
 
+    # --- 关系库相关（未启用关系库时保持默认值） ---
+    status: RelationStatus | None = None  # 该匹配在关系库中的状态
+    review_reason: str = ""          # 进入复核的原因，见 ReviewReason
+    change_note: str = ""            # 商品信息变更时的前后对比
+    from_store: bool = False         # 是否直接复用关系库，未经过 L1-L3
+    # AI 低置信判定为「不匹配」时，保留被否的候选供人工复核
+    candidate: Product | None = None
+
     @property
     def matched(self) -> bool:
         return self.rival_product is not None
+
+    @property
+    def confirmed(self) -> bool:
+        """可作为正式调价依据的匹配：已匹配且无需复核。"""
+        return self.matched and not self.need_review
+
+    @property
+    def review_target(self) -> Product | None:
+        """复核对象：匹配到的竞品，或被 AI 低置信否掉的候选。"""
+        return self.rival_product or self.candidate
 
 
 @dataclass
@@ -172,3 +256,11 @@ class CompareRow:
     action: Action = Action.NO_DATA
     comparable: bool = False         # 是否基于单位价可比（否则仅比标价）
     notes: list[str] = field(default_factory=list)
+
+    tier: SuggestionTier = SuggestionTier.FORMAL
+    # 待确认建议所依赖的待复核匹配：平台 key 列表
+    depends_on: list[str] = field(default_factory=list)
+
+    @property
+    def formal(self) -> bool:
+        return self.tier is SuggestionTier.FORMAL
