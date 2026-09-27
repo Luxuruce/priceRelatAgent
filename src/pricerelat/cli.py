@@ -7,6 +7,7 @@
     python run.py fetch     # 从云采集 API（八爪鱼 / Apify / Firecrawl 等）拉取数据
     python run.py demo      # 用样例数据跑通全流程
     python run.py relations # 导出匹配关系库，供排查
+    python run.py evaluate  # 用标注评测集计算匹配准确率 / 召回率
 """
 
 from __future__ import annotations
@@ -225,6 +226,24 @@ def cmd_relations(args, cfg: dict) -> int:
     return 0
 
 
+def cmd_evaluate(args, cfg: dict) -> int:
+    """用评测集跑当前配置的匹配，输出分层准确率与召回率。不依赖多维表格与关系库。"""
+    from .evaluate import EvalSetError, evaluate, format_report, load_set, write_outputs
+
+    e_cfg = cfg.get("evaluate", {})
+    try:
+        data = load_set(_resolve(args.set or e_cfg.get("set_path", "data/eval/评测集.csv")))
+    except EvalSetError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 1
+
+    result = evaluate(data, cfg)
+    summary_path, errors_path = write_outputs(result, _resolve(args.out or cfg.get("report", {}).get("output_dir", "data/output")))
+    print(format_report(result))
+    print(f"\n评测结果：{summary_path}\n错配明细：{errors_path}")
+    return 0
+
+
 def cmd_serve(args, cfg: dict) -> int:
     from .ingest.http_server import serve
 
@@ -356,6 +375,10 @@ def main(argv: list[str] | None = None) -> int:
     p_rel.add_argument("--status", choices=[s.value for s in RelationStatus], help="只导出指定状态")
     p_rel.add_argument("--out", help="导出路径，默认 data/output/匹配关系库.csv")
 
+    p_eval = sub.add_parser("evaluate", help="用标注评测集计算匹配准确率与召回率")
+    p_eval.add_argument("--set", help="评测集路径，默认 data/eval/评测集.csv")
+    p_eval.add_argument("--out", help="结果输出目录，默认 data/output")
+
     p_fetch = sub.add_parser("fetch", help="从云采集 API 拉取数据到 inbox")
     p_fetch.add_argument("--source", help="只执行指定名称的数据源（忽略 enabled）")
 
@@ -378,5 +401,6 @@ def main(argv: list[str] | None = None) -> int:
         "fetch": cmd_fetch,
         "demo": cmd_demo,
         "relations": cmd_relations,
+        "evaluate": cmd_evaluate,
     }
     return handlers[args.command](args, cfg)
