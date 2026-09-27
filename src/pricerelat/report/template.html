@@ -366,7 +366,7 @@ function rivalHtml(rivals) {
     }
     const flag = v.need_review ? '<span class="flag">待复核</span>' : '';
     const unit = v.unit_price !== null && v.unit_price !== undefined
-      ? `（${fmt(v.unit_price)}/单位）` : '';
+      ? `（${fmt(v.unit_price)} ${esc(v.unit_label)}）` : '';
     return `<div class="rival">
       <span class="dot" style="background:${SERIES[i % 4]}"></span>
       ${esc(v.name)}：<span class="rprice">¥${fmt(v.price)} ${unit}</span>${flag}

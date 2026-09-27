@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from ..models import Action, CompareRow, MatchPair, Product
+from ..models import Action, CompareRow, MatchPair, Product, measure_mismatch_note, same_measure
 
 
 def _pick_benchmark(
@@ -36,7 +36,7 @@ def _pick_benchmark(
     comparable = [
         (k, p)
         for k, p in valid
-        if p.unit_price is not None and p.spec.unit is self_product.spec.unit
+        if p.unit_price is not None and same_measure(p.spec, self_product.spec)
     ]
     pool = comparable or valid
     key_fn = (
@@ -101,7 +101,7 @@ def build_row(
             for p in rivals.values()
             if p.matched
             and p.rival_product.unit_price is not None
-            and p.rival_product.spec.unit is self_product.spec.unit
+            and same_measure(p.rival_product.spec, self_product.spec)
         ]
         row.benchmark_unit_price = (
             sum(unit_prices) / len(unit_prices) if unit_prices else None
@@ -110,11 +110,11 @@ def build_row(
     self_unit = self_product.unit_price
     bench_unit = row.benchmark_unit_price
 
-    # 单位价可比的条件：双方都解析出规格，且单位类别一致
+    # 单位价可比的条件：双方都解析出规格，且可比口径一致（单位类别 + 计数单位）
     if (
         self_unit is not None
         and bench_unit is not None
-        and self_product.spec.unit is bench.spec.unit
+        and same_measure(self_product.spec, bench.spec)
     ):
         row.comparable = True
         row.diff = self_unit - bench_unit
@@ -131,7 +131,7 @@ def build_row(
         elif not bench.spec.parsed:
             row.notes.append("竞品规格未解析，按标价对比")
         else:
-            row.notes.append("单位类别不同，按标价对比")
+            row.notes.append(f"{measure_mismatch_note(self_product.spec, bench.spec)}，按标价对比")
 
     row.action = _decide_action(row.diff_rate, thresholds)
 

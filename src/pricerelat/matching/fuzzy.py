@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from rapidfuzz import fuzz, process
 
-from ..models import MatchPair, Product
+from ..models import MatchPair, Product, measure_mismatch_note
 from ..normalize.text import char_bigrams, sub_brand_mismatch, variant_conflict
 
 
@@ -38,12 +38,12 @@ def spec_penalty(a: Product, b: Product, max_penalty: float) -> tuple[float, str
 
     双方规格都解析成功时，按整包总量的倍率差扣分：
     同规格不扣分，倍率差越大扣得越多，封顶 max_penalty。
-    单位类别不同（重量 vs 体积）视为不可比，直接扣满。
+    可比口径不同（重量 vs 体积、抽 vs 件）视为不可比，直接扣满。
     """
     if not (a.spec.parsed and b.spec.parsed):
         return 0.0, ""
-    if a.spec.unit is not b.spec.unit:
-        return max_penalty, f"单位类别不同（{a.spec.unit.value} vs {b.spec.unit.value}）"
+    if a.spec.measure_key != b.spec.measure_key:
+        return max_penalty, measure_mismatch_note(a.spec, b.spec)
 
     ratio = max(a.spec.total_base, b.spec.total_base) / min(
         a.spec.total_base, b.spec.total_base

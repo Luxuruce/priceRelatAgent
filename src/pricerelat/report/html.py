@@ -14,7 +14,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from ..models import Action, CompareRow
+from ..models import Action, CompareRow, same_measure
 
 _TEMPLATE_DIR = Path(__file__).parent
 
@@ -50,7 +50,7 @@ def _summarize(rows: list[CompareRow], competitors: list[dict]) -> dict:
             if (
                 sp.unit_price is not None
                 and rp.unit_price is not None
-                and sp.spec.unit is rp.spec.unit
+                and same_measure(sp.spec, rp.spec)
             ):
                 rates.append((sp.unit_price - rp.unit_price) / rp.unit_price)
             else:
@@ -112,6 +112,7 @@ def _row_payload(row: CompareRow, competitors: list[dict]) -> dict:
                     "title": rp.title,
                     "price": rp.price,
                     "unit_price": rp.unit_price,
+                    "unit_label": rp.unit_price_label,
                     "spec": rp.spec.display(),
                     "level": pair.level.value,
                     "score": round(pair.score, 1),

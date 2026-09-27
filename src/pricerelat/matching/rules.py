@@ -15,10 +15,11 @@ from ..normalize.text import sub_brand_mismatch, variant_conflict
 
 
 def _spec_key(p: Product) -> str:
-    """规格指纹：单位类别 + 整包总量。500ml*6 与 3L 会得到同一个 key。"""
+    """规格指纹：可比口径 + 整包总量。500ml*6 与 3L 会得到同一个 key。"""
     if not p.spec.parsed:
         return ""
-    return f"{p.spec.unit.value}:{round(p.spec.total_base, 3)}"
+    unit, content_unit = p.spec.measure_key
+    return f"{unit.value}{content_unit}:{round(p.spec.total_base, 3)}"
 
 
 def match_by_barcode(

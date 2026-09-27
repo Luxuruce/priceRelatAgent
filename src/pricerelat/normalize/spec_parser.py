@@ -5,6 +5,7 @@
 
 解析优先级：平台规格字段 > 商品标题。
 解析结果全部折算到：重量→克，体积→毫升，计数→件。
+纸品日化的「150抽×24包」按内含量折算为 3600 抽，而不是 24 件。
 """
 
 from __future__ import annotations
@@ -50,12 +51,23 @@ _COUNT_UNITS = (
     "组", "入", "杯", "块", "枚", "把", "捆", "提", "听", "桶", "件", "双", "对",
 )
 
+# 内含量单位：纸品的抽/张、湿巾面膜的片、药品保健品的粒、卷纸的卷。
+# 与普通件数（包/瓶）不可互相折算，解析后记在 Spec.content_unit
+_CONTENT_UNITS = ("抽", "张", "片", "粒", "卷")
+# 内含量后面跟的包数单位：「150抽×24包」「10卷×2提」
+_PACK_UNITS = ("连包", "包", "提", "袋", "盒", "箱")
+
 # 长度降序，保证最长匹配优先
 _MEASURE_PATTERN = "|".join(
     re.escape(u) for u in sorted(_MEASURE_UNITS, key=len, reverse=True)
 )
 _COUNT_PATTERN = "|".join(
     re.escape(u) for u in sorted(_COUNT_UNITS, key=len, reverse=True)
+)
+
+_CONTENT_PATTERN = "|".join(map(re.escape, _CONTENT_UNITS))
+_PACK_PATTERN = "|".join(
+    re.escape(u) for u in sorted(_PACK_UNITS, key=len, reverse=True)
 )
 
 _NUM = r"\d+(?:\.\d+)?"
@@ -70,6 +82,18 @@ _RE_COUNT_MUL_MEASURE = re.compile(
 )
 # 单独的净含量，形如 500g / 1.5L / 净含量：750克
 _RE_MEASURE = re.compile(rf"({_NUM})\s*({_MEASURE_PATTERN})(?![a-zA-Z一-鿿])")
+# 内含量 × 包数，形如 150抽*24包 / 80片*3 / 10卷*2提
+_RE_CONTENT_MUL_PACK = re.compile(
+    rf"(\d+)\s*({_CONTENT_PATTERN})\s*\*\s*(\d+)\s*(?:{_PACK_PATTERN})?",
+)
+# 包数 × 内含量，形如 24包*150抽
+_RE_PACK_MUL_CONTENT = re.compile(
+    rf"(\d+)\s*(?:{_PACK_PATTERN})\s*\*\s*(\d+)\s*({_CONTENT_PATTERN})",
+)
+# 单独的内含量，形如 150抽 / 10卷 / 5片装
+_RE_CONTENT = re.compile(rf"(\d+)\s*({_CONTENT_PATTERN})(?:装)?")
+# 单独的包数，与内含量分开出现时使用：「3层150抽 24包」
+_RE_PACK = re.compile(rf"(\d+)\s*(?:{_PACK_PATTERN})")
 # 单独的件数，形如 12盒 / 6连包 / 24瓶装
 _RE_COUNT = re.compile(rf"(\d+)\s*({_COUNT_PATTERN})")
 
@@ -113,6 +137,42 @@ def _build(qty: float, unit_text: str, count: int, raw: str) -> Spec:
         count=max(count, 1),
         total_base=qty_base * max(count, 1),
     )
+
+
+def _build_content(qty: int, content_unit: str, packs: int, raw: str) -> Spec:
+    packs = max(packs, 1)
+    return Spec(
+        raw=raw,
+        qty=float(qty),
+        unit_text=content_unit,
+        unit=Unit.COUNT,
+        qty_base=float(qty),
+        count=packs,
+        total_base=float(qty * packs),
+        content_unit=content_unit,
+    )
+
+
+def _parse_content(s: str) -> Spec | None:
+    """解析内含量规格。只写「10卷」「5片装」时按每卷、每片计价。"""
+    if m := _RE_CONTENT_MUL_PACK.search(s):
+        return _build_content(int(m.group(1)), m.group(2), int(m.group(3)), m.group(0).strip())
+
+    if m := _RE_PACK_MUL_CONTENT.search(s):
+        return _build_content(int(m.group(2)), m.group(3), int(m.group(1)), m.group(0).strip())
+
+    m = _RE_CONTENT.search(s)
+    if not m or int(m.group(1)) <= 0:
+        return None
+    qty, content_unit = int(m.group(1)), m.group(2)
+    packs, raw = 1, m.group(0).strip()
+    rest = s[: m.start()] + " " + s[m.end() :]
+    if m_pack := _RE_PACK.search(rest):
+        n = int(m_pack.group(1))
+        if 1 < n <= 200:
+            packs = n
+            raw = f"{raw}*{m_pack.group(0).strip()}"
+    return _build_content(qty, content_unit, packs, raw)
 
 
 def parse_spec(title: str, spec_text: str = "") -> Spec:
@@ -163,7 +223,11 @@ def _parse_one(text: str) -> Spec:
                 raw = f"{raw}*{m_count.group(0).strip()}"
         return _build(qty, unit_text, count, raw)
 
-    # 4) 只有件数，没有净含量：苹果 5个装 → 按件计价
+    # 4) 内含量：150抽*24包 → 3600 抽；10卷 → 按每卷计价
+    if spec := _parse_content(s):
+        return spec
+
+    # 5) 只有件数，没有净含量：苹果 5个装 → 按件计价
     if m := _RE_COUNT.search(s):
         n = int(m.group(1))
         if 0 < n <= 500:

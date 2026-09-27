@@ -60,3 +60,86 @@ def test_spec_text_takes_priority():
     """平台规格字段比标题更可信。"""
     spec = parse_spec("某商品 促销中", spec_text="500ml*6瓶")
     assert spec.total_base == pytest.approx(3000.0)
+
+
+# ------------------------------------------------------------------
+# R4 计数类内含量折算
+# ------------------------------------------------------------------
+
+from pricerelat.compare.engine import build_row
+from pricerelat.ingest.base import enrich
+from pricerelat.models import MatchLevel, MatchPair, Product
+
+
+@pytest.mark.parametrize(
+    "title,content_unit,total,count",
+    [
+        ("清风 抽纸 150抽×24包", "抽", 3600, 24),
+        ("维达 3层130抽 24包", "抽", 3120, 24),
+        ("24包*150抽", "抽", 3600, 24),
+        ("心相印 手帕纸 10张*18包", "张", 180, 18),
+        ("湿巾 80片*3包", "片", 240, 3),
+        ("卷纸 10卷×2提", "卷", 20, 2),
+        ("卷纸 10卷", "卷", 10, 1),
+        ("面膜 5片装", "片", 5, 1),
+        ("鱼油 100粒", "粒", 100, 1),
+    ],
+)
+def test_parse_content_unit(title, content_unit, total, count):
+    spec = parse_spec(title)
+    assert spec.unit is Unit.COUNT
+    assert spec.content_unit == content_unit
+    assert spec.total_base == pytest.approx(total)
+    assert spec.count == count
+
+
+def test_measure_beats_content_unit():
+    """净含量优先：「140g×10卷」按重量比，不按卷。"""
+    spec = parse_spec("卷纸 140g×10卷")
+    assert spec.unit is Unit.WEIGHT
+    assert spec.content_unit == ""
+
+
+def _product(platform, title, price):
+    return enrich(Product(platform=platform, platform_name=platform, sku_id=title, title=title, price=price))
+
+
+def _row(self_title, self_price, rival_title, rival_price):
+    me = _product("self", self_title, self_price)
+    rival = _product("sams", rival_title, rival_price)
+    pair = MatchPair(self_product=me, rival_product=rival, score=100, level=MatchLevel.BARCODE, confidence=1.0)
+    return me, build_row(me, {"sams": pair}, {"compare": {"benchmark": "min"}})
+
+
+def test_tissue_unit_price_per_100_draws():
+    p = _product("self", "清风 抽纸 150抽×24包", 72.0)
+    assert p.unit_price == pytest.approx(2.0)
+    assert p.unit_price_label == "元/100抽"
+
+
+def test_roll_and_piece_priced_per_unit():
+    assert _product("self", "卷纸 10卷", 30.0).unit_price_label == "元/卷"
+    assert _product("self", "面膜 5片装", 50.0).unit_price == pytest.approx(10.0)
+    assert _product("self", "面膜 5片装", 50.0).unit_price_label == "元/片"
+    assert _product("self", "抽纸 6连包", 30.0).unit_price_label == "元/件"
+
+
+def test_different_draw_counts_compared_per_100():
+    """130抽×24包 与 150抽×24包 按每 100 抽比较。"""
+    _, row = _row("维达 130抽×24包", 62.4, "清风 150抽×24包", 72.0)
+    assert row.comparable
+    # 我方 62.4/3120*100 = 2.0，竞品 72/3600*100 = 2.0
+    assert row.diff_rate == pytest.approx(0.0)
+
+
+def test_draws_vs_packs_not_comparable():
+    """「150抽×24包」与「24包」计数口径不同，降级为标价对比并写明原因。"""
+    _, row = _row("清风 抽纸 150抽×24包", 72.0, "清风 抽纸 24包", 60.0)
+    assert not row.comparable
+    assert any("计数单位不同（抽 vs 件）" in n for n in row.notes)
+
+
+def test_draws_vs_sheets_not_comparable():
+    _, row = _row("抽纸 150抽×24包", 72.0, "抽纸 150张×24包", 60.0)
+    assert not row.comparable
+    assert any("抽 vs 张" in n for n in row.notes)
