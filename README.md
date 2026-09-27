@@ -98,6 +98,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 | `run.py compare --fetch` | 先拉取云采集数据再比价 |
 | `run.py relations [--status 已确认]` | 导出匹配关系库，不跑比价 |
 | `run.py evaluate [--set <路径>]` | 用标注评测集计算分层准确率、召回率 |
+| `run.py writeback [--csv <路径>]` | 把复核表（或本地 CSV）中的人工结论回写关系库 |
 
 加 `-v` 看详细日志，加 `-c <路径>` 指定配置文件。
 
@@ -108,6 +109,18 @@ export ANTHROPIC_API_KEY=sk-ant-...
 竞品标题或规格变了（只改营销词不算），关系转回待复核。已确认的竞品连续 3 期（ISO 周）
 未采集到则置为失效并重新匹配。`compare --period 2026-W40` 可指定期次，同一周重跑覆盖本期。
 `demo` 使用独立的 `data/state/demo.db`，不影响正式关系库。
+
+### 人工复核（飞书多维表格）
+
+`compare` 结束后，关系库中的待复核匹配写入多维表格「匹配复核」表；专员在表里填「人工结论」
+（确认 / 否决 / 改配，改配时填「改配竞品SKU」），下次 `compare` 开始前自动回写关系库，
+也可以处理完立即执行 `run.py writeback`。
+
+- 配置 `matching.review.bitable.base_token`，或设置环境变量 `FEISHU_REVIEW_BASE_TOKEN`
+- 试点期以个人身份写入，需先 `lark-cli auth login`；推广前把 `identity` 改为 `bot`（自建应用）
+- 同一关系在表中还有未回写完成的行时不重复写入；已有人工结论的行程序不删、不改
+- 改配的 SKU 必须在最近一期采集结果中，否则该行「回写失败」并写明原因，修正后下次自动重试
+- 多维表格不可访问时比价照常完成，本地 `待人工复核.csv` 的「人工确认」列填写结论同样可以回写
 
 ### 匹配评测
 

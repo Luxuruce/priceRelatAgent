@@ -8,6 +8,7 @@
     python run.py demo      # 用样例数据跑通全流程
     python run.py relations # 导出匹配关系库，供排查
     python run.py evaluate  # 用标注评测集计算匹配准确率 / 召回率
+    python run.py writeback # 把复核表中的人工结论回写关系库
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ def collect_all(cfg: dict) -> tuple[list[Product], dict[str, list[Product]]]:
     return self_products, rivals
 
 
-def _export_review(rows, cfg: dict) -> Path | None:
+def _export_review(rows, cfg: dict, period: str = "") -> Path | None:
     """导出待人工复核清单，对应原方案的「人工2次确认」环节。"""
     path = _resolve(
         cfg.get("matching", {}).get("review", {}).get(
@@ -98,6 +99,7 @@ def _export_review(rows, cfg: dict) -> Path | None:
             target = pair.review_target
             records.append(
                 {
+                    "比价期次": period,
                     "我方SKU": row.self_product.sku_id,
                     "我方商品": row.self_product.title,
                     "我方规格": row.self_product.spec.display(),
@@ -111,7 +113,8 @@ def _export_review(rows, cfg: dict) -> Path | None:
                     "判定依据": pair.reason if pair.matched else f"{pair.reason}（判定为不匹配）",
                     "进入复核原因": pair.review_reason,
                     "变更说明": pair.change_note,
-                    "人工确认": "",  # 留空供人工填写：确认 / 否决 / 改配SKU
+                    "人工确认": "",  # 留空供人工填写：确认 / 否决 / 改配
+                    "改配竞品SKU": "",
                 }
             )
 
@@ -155,10 +158,16 @@ def cmd_compare(args, cfg: dict) -> int:
 
     period = getattr(args, "period", None) or current_period()
     store = open_store(cfg)
+    sync_notes: list[str] = []
     try:
+        if store is not None:
+            _record_observations(store, period, self_products, rivals)
+            sync_notes += _writeback_before_run(store, cfg, period)
         matches = _match_all(self_products, rivals, cfg, store, period)
         if store is not None:
             store.commit()
+            if matches:
+                sync_notes += _push_review(store, cfg, period)
     finally:
         if store is not None:
             store.close()
@@ -172,7 +181,7 @@ def cmd_compare(args, cfg: dict) -> int:
 
     # ---- 输出 ----
     report_path = report_html.render(rows, cfg)
-    review_path = _export_review(rows, cfg)
+    review_path = _export_review(rows, cfg, period)
 
     priced = [r for r in rows if r.diff_rate is not None]
     higher = [r for r in priced if r.diff_rate > 0]
@@ -188,15 +197,62 @@ def cmd_compare(args, cfg: dict) -> int:
     print(f"\n报告：{report_path}")
     if review_path:
         print(f"待复核清单：{review_path}")
+    for note in sync_notes:
+        print(note)
     print("=" * 56)
     return 0
 
 
-def _match_all(self_products, rivals, cfg: dict, store: Store | None, period: str) -> dict:
-    """逐平台匹配。启用关系库时先保存本期采集快照，再查库复用已确认的关系。"""
-    if store is not None:
-        store.record_observations(period, SELF_PLATFORM, self_products)
+def _record_observations(store: Store, period: str, self_products, rivals) -> None:
+    """保存本期采集快照：改配校验、变更基线与价格历史都依赖它。"""
+    store.record_observations(period, SELF_PLATFORM, self_products)
+    for key, items in rivals.items():
+        if items:
+            store.record_observations(period, key, items)
+    store.commit()
 
+
+def _writeback_before_run(store: Store, cfg: dict, period: str) -> list[str]:
+    """比价前回读人工结论。多维表格不可用时改读本地待复核 CSV。"""
+    from .review.bitable import BitableError, open_table
+    from .review.sync import writeback, writeback_csv
+
+    try:
+        table = open_table(cfg)
+        if table is not None:
+            result = writeback(store, table, period)
+            logger.info("复核表回写：%s", result.summary())
+            return [f"复核表回写失败 {len(result.failed)} 条，详见复核表「回写失败原因」"] if result.failed else []
+    except BitableError as e:
+        logger.warning("复核表回写失败，改读本地 CSV：%s", e)
+
+    csv_path = _resolve(cfg.get("matching", {}).get("review", {}).get("export_path", "data/output/待人工复核.csv"))
+    if csv_path.exists():
+        result = writeback_csv(store, csv_path, period)
+        if result.applied or result.failed:
+            logger.info("本地 CSV 回写：%s", result.summary())
+            return [f"本地 CSV 回写失败：{k} {r}" for k, r in result.failed]
+    return []
+
+
+def _push_review(store: Store, cfg: dict, period: str) -> list[str]:
+    """比价后把待复核关系写入复核表。失败不影响比价，本地 CSV 照常导出。"""
+    from .review.bitable import BitableError, open_table
+    from .review.sync import push
+
+    try:
+        table = open_table(cfg)
+        if table is None:
+            return []
+        n = push(store, table, period)
+        return [f"复核表：新增 {n} 条待复核"]
+    except BitableError as e:
+        logger.warning("复核表同步失败：%s", e)
+        return [f"⚠ 复核表同步失败，待复核项已导出为本地 CSV（{e}）"]
+
+
+def _match_all(self_products, rivals, cfg: dict, store: Store | None, period: str) -> dict:
+    """逐平台匹配。启用关系库时先查库复用已确认的关系。"""
     matches = {}
     for c in cfg.get("competitors", []):
         key, name = c["key"], c["name"]
@@ -204,8 +260,6 @@ def _match_all(self_products, rivals, cfg: dict, store: Store | None, period: st
         if not items:
             logger.warning("[%s] 无商品数据，跳过", name)
             continue
-        if store is not None:
-            store.record_observations(period, key, items)
         pairs, stats = match_platform(self_products, items, cfg, store=store, period=period)
         matches[key] = pairs
         logger.info("[%s] %s", name, stats.summary())
@@ -224,6 +278,40 @@ def cmd_relations(args, cfg: dict) -> int:
         n = store.export_relations(out, status=status)
     print(f"已导出 {n} 条关系：{out}")
     return 0
+
+
+def cmd_writeback(args, cfg: dict) -> int:
+    """单独回写人工结论，专员处理完复核表后立即生效，不必等下次比价。"""
+    from .review.bitable import BitableError, open_table
+    from .review.sync import writeback, writeback_csv
+
+    store = open_store(cfg)
+    if store is None:
+        print("关系库未启用（config.yaml 中 store.enabled 为 false）", file=sys.stderr)
+        return 1
+    with store:
+        if args.csv:
+            result = writeback_csv(store, _resolve(args.csv))
+        else:
+            try:
+                table = open_table(cfg)
+            except BitableError as e:
+                print(f"错误：{e}", file=sys.stderr)
+                return 1
+            if table is None:
+                print("未配置复核表：在 config.yaml 填 matching.review.bitable.base_token "
+                      "或设置环境变量 FEISHU_REVIEW_BASE_TOKEN；也可用 --csv 从本地 CSV 回写",
+                      file=sys.stderr)
+                return 1
+            try:
+                result = writeback(store, table)
+            except BitableError as e:
+                print(f"错误：复核表不可访问：{e}", file=sys.stderr)
+                return 1
+    print(result.summary())
+    for key, reason in result.failed:
+        print(f"  失败 {key}：{reason}")
+    return 1 if result.failed else 0
 
 
 def cmd_evaluate(args, cfg: dict) -> int:
@@ -375,6 +463,9 @@ def main(argv: list[str] | None = None) -> int:
     p_rel.add_argument("--status", choices=[s.value for s in RelationStatus], help="只导出指定状态")
     p_rel.add_argument("--out", help="导出路径，默认 data/output/匹配关系库.csv")
 
+    p_wb = sub.add_parser("writeback", help="把复核表中的人工结论回写关系库")
+    p_wb.add_argument("--csv", help="改从本地待复核 CSV 回写（多维表格不可用时）")
+
     p_eval = sub.add_parser("evaluate", help="用标注评测集计算匹配准确率与召回率")
     p_eval.add_argument("--set", help="评测集路径，默认 data/eval/评测集.csv")
     p_eval.add_argument("--out", help="结果输出目录，默认 data/output")
@@ -402,5 +493,6 @@ def main(argv: list[str] | None = None) -> int:
         "demo": cmd_demo,
         "relations": cmd_relations,
         "evaluate": cmd_evaluate,
+        "writeback": cmd_writeback,
     }
     return handlers[args.command](args, cfg)
