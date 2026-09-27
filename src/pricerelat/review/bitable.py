@@ -43,6 +43,7 @@ class ReviewTable(Protocol):
     def list_rows(self) -> list[Row]: ...
     def create_rows(self, rows: list[dict]) -> None: ...
     def update_rows(self, updates: dict[str, dict]) -> None: ...
+    def delete_rows(self, record_ids: list[str]) -> None: ...
 
 
 class LarkCliTable:
@@ -103,18 +104,39 @@ class LarkCliTable:
                 time.sleep(0.5)
 
 
-def open_table(cfg: dict) -> LarkCliTable | None:
-    """按配置打开复核表。未配置 base_token 时返回 None（不启用多维表格）。"""
+    def delete_rows(self, record_ids: list[str]) -> None:
+        for i in range(0, len(record_ids), _BATCH):
+            payload = {"record_id_list": record_ids[i : i + _BATCH]}
+            self._run("+record-delete", "--json", json.dumps(payload), "--yes")
+            if i + _BATCH < len(record_ids):
+                time.sleep(0.5)
+
+
+def _bitable_cfg(cfg: dict) -> tuple[str, str]:
+    """复核表与比价结果表在同一个多维表格里，共用 base_token 与写入身份。"""
     import os
 
     b_cfg = cfg.get("matching", {}).get("review", {}).get("bitable", {})
-    if not b_cfg.get("enabled", True):
-        return None
     token = b_cfg.get("base_token") or os.getenv("FEISHU_REVIEW_BASE_TOKEN", "")
-    if not token:
+    return token, b_cfg.get("identity", "user")
+
+
+def open_table(cfg: dict) -> LarkCliTable | None:
+    """按配置打开复核表。未配置 base_token 时返回 None（不启用多维表格）。"""
+    b_cfg = cfg.get("matching", {}).get("review", {}).get("bitable", {})
+    token, identity = _bitable_cfg(cfg)
+    if not b_cfg.get("enabled", True) or not token:
         return None
-    return LarkCliTable(
-        base_token=token,
-        table=b_cfg.get("table", "匹配复核"),
-        identity=b_cfg.get("identity", "user"),
+    return LarkCliTable(base_token=token, table=b_cfg.get("table", "匹配复核"), identity=identity)
+
+
+def open_result_tables(cfg: dict) -> tuple[LarkCliTable, LarkCliTable] | None:
+    """打开比价结果表与平台价差表，供仪表盘使用。未启用返回 None。"""
+    r_cfg = cfg.get("report", {}).get("bitable", {})
+    token, identity = _bitable_cfg(cfg)
+    if not r_cfg.get("enabled", True) or not token:
+        return None
+    return (
+        LarkCliTable(base_token=token, table=r_cfg.get("results_table", "比价结果"), identity=identity),
+        LarkCliTable(base_token=token, table=r_cfg.get("platform_table", "平台价差"), identity=identity),
     )

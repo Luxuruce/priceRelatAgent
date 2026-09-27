@@ -63,6 +63,19 @@ def _pick_benchmark(
     return min(pool, key=lambda kp: abs(key_fn(kp) - avg))
 
 
+def pair_diff_rate(self_product: Product, rival: Product) -> float | None:
+    """我方相对单个竞品的价差率：口径一致按单位价，否则按标价。缺价返回 None。"""
+    if rival.price is None or self_product.price is None:
+        return None
+    if (
+        self_product.unit_price is not None
+        and rival.unit_price is not None
+        and same_measure(self_product.spec, rival.spec)
+    ):
+        return (self_product.unit_price - rival.unit_price) / rival.unit_price
+    return (self_product.price - rival.price) / rival.price if rival.price else None
+
+
 def _decide_action(diff_rate: float | None, thresholds: dict) -> Action:
     if diff_rate is None:
         return Action.NO_DATA

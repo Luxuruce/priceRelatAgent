@@ -207,3 +207,9 @@ report:
   output_dir: "data/output"
   html_name: "比价报告.html"
   top_n: 20                    # 报告中价差 TOP N
+  # 本期比价结果写入复核表所在的多维表格（共用 matching.review.bitable 的 token 与身份），
+  # 每次运行整表替换为最新一期，供仪表盘展示
+  bitable:
+    enabled: true
+    results_table: "比价结果"
+    platform_table: "平台价差"

@@ -14,7 +14,8 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from ..models import Action, CompareRow, same_measure
+from ..compare.engine import pair_diff_rate
+from ..models import Action, CompareRow
 
 _TEMPLATE_DIR = Path(__file__).parent
 
@@ -45,17 +46,9 @@ def _summarize(rows: list[CompareRow], competitors: list[dict]) -> dict:
             pair = r.rivals.get(key)
             if not (pair and pair.matched):
                 continue
-            sp, rp = r.self_product, pair.rival_product
-            if rp.price is None or sp.price is None:
-                continue
-            if (
-                sp.unit_price is not None
-                and rp.unit_price is not None
-                and same_measure(sp.spec, rp.spec)
-            ):
-                rates.append((sp.unit_price - rp.unit_price) / rp.unit_price)
-            else:
-                rates.append((sp.price - rp.price) / rp.price)
+            rate = pair_diff_rate(r.self_product, pair.rival_product)
+            if rate is not None:
+                rates.append(rate)
         per_platform.append(
             {
                 "key": key,

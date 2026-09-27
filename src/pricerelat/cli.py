@@ -182,6 +182,7 @@ def cmd_compare(args, cfg: dict) -> int:
     # ---- 输出 ----
     report_path = report_html.render(rows, cfg)
     review_path = _export_review(rows, cfg, period)
+    sync_notes += _push_results(rows, cfg, period)
 
     priced = [r for r in rows if r.diff_rate is not None]
     higher = [r for r in priced if r.diff_rate > 0]
@@ -249,6 +250,22 @@ def _push_review(store: Store, cfg: dict, period: str) -> list[str]:
     except BitableError as e:
         logger.warning("复核表同步失败：%s", e)
         return [f"⚠ 复核表同步失败，待复核项已导出为本地 CSV（{e}）"]
+
+
+def _push_results(rows, cfg: dict, period: str) -> list[str]:
+    """本期比价结果写入多维表格，供仪表盘展示。失败不影响本地报告。"""
+    from .report.feishu import push_results
+    from .review.bitable import BitableError, open_result_tables
+
+    try:
+        tables = open_result_tables(cfg)
+        if tables is None:
+            return []
+        n_rows, n_pairs = push_results(*tables, rows, cfg.get("competitors", []), period)
+        return [f"比价结果表：已更新为本期 {n_rows} 个商品、{n_pairs} 组平台价差"]
+    except BitableError as e:
+        logger.warning("比价结果表同步失败：%s", e)
+        return [f"⚠ 比价结果表同步失败，仪表盘仍为上期数据（{e}）"]
 
 
 def _match_all(self_products, rivals, cfg: dict, store: Store | None, period: str) -> dict:
