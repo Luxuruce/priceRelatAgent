@@ -52,6 +52,7 @@ def test_result_records():
     rec = result_records(rows(), COMPETITORS, "2026-W40")[0]
     assert rec["基准平台"] == "大润发"   # 只用已确认的竞品
     assert rec["价差率"] == pytest.approx(0.2)
+    assert rec["价差率(%)"] == pytest.approx(20.0)
     assert rec["建议动作"] == "建议降价(高优)" and rec["建议类别"] == "正式"
     assert rec["对比方式"] == "单位价" and rec["比价期次"] == "2026-W40"
 
@@ -61,6 +62,7 @@ def test_platform_records():
     assert recs["大润发"]["匹配状态"] == "已确认"
     assert recs["山姆"]["匹配状态"] == "待复核"
     assert recs["山姆"]["价差率"] == pytest.approx(0.25)
+    assert recs["山姆"]["价差率(%)"] == pytest.approx(25.0)
 
 
 def test_push_replaces_previous_period():

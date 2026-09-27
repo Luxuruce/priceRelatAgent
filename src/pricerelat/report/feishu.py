@@ -18,6 +18,11 @@ def _round(value: float | None, digits: int = 4) -> float | None:
     return None if value is None else round(value, digits)
 
 
+def _points(rate: float | None) -> float | None:
+    """价差率 → 百分点（0.069 → 6.9）。仪表盘组件不沿用字段的百分比格式，用这一列才显示得对。"""
+    return None if rate is None else round(rate * 100, 1)
+
+
 def result_records(rows: list[CompareRow], competitors: list[dict], period: str) -> list[dict]:
     names = {c["key"]: c["name"] for c in competitors}
     out = []
@@ -40,6 +45,7 @@ def result_records(rows: list[CompareRow], competitors: list[dict], period: str)
             "基准平台": names.get(r.benchmark_platform, r.benchmark_platform),
             "基准单位价": _round(r.benchmark_unit_price),
             "价差率": _round(r.diff_rate),
+            "价差率(%)": _points(r.diff_rate),
             "建议动作": r.action.value,
             "建议类别": r.tier.value,
             "对比方式": method,
@@ -57,6 +63,7 @@ def platform_records(rows: list[CompareRow], competitors: list[dict], period: st
             if not pair.matched:
                 continue
             rp = pair.rival_product
+            rate = pair_diff_rate(sp, rp)
             out.append({
                 "我方商品": sp.title,
                 "比价期次": period,
@@ -66,7 +73,8 @@ def platform_records(rows: list[CompareRow], competitors: list[dict], period: st
                 "竞品SKU": rp.sku_id,
                 "竞品商品": rp.title,
                 "竞品价": rp.price,
-                "价差率": _round(pair_diff_rate(sp, rp)),
+                "价差率": _round(rate),
+                "价差率(%)": _points(rate),
                 "匹配状态": "已确认" if pair.confirmed else "待复核",
                 "匹配层级": pair.level.value,
             })
