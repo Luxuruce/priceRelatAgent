@@ -23,7 +23,7 @@ import yaml
 from .compare.engine import build_rows
 from .ingest.file_collector import FileCollector
 from .matching.pipeline import match_platform
-from .models import Product, RelationStatus
+from .models import Action, Product, RelationStatus
 from .report import html as report_html
 from .store import Store, current_period
 
@@ -175,12 +175,15 @@ def cmd_compare(args, cfg: dict) -> int:
 
     priced = [r for r in rows if r.diff_rate is not None]
     higher = [r for r in priced if r.diff_rate > 0]
+    urgent = [r for r in rows if r.formal and r.action is Action.CUT_PRICE_URGENT]
+    tentative = [r for r in rows if not r.formal]
     print("\n" + "=" * 56)
     print(f"比价期次：{period}")
     print(f"比价完成：{len(rows)} 个商品，{len(priced)} 个产出有效价差")
     if priced:
         avg = sum(r.diff_rate for r in priced) / len(priced)
         print(f"我方偏高 {len(higher)} 个，平均价差率 {avg * 100:+.1f}%")
+    print(f"正式高优降价 {len(urgent)} 个，待确认建议 {len(tentative)} 个")
     print(f"\n报告：{report_path}")
     if review_path:
         print(f"待复核清单：{review_path}")

@@ -1,12 +1,24 @@
 """比价计算。
 
-核心是「可比性」：只有双方规格都解析成功且单位类别相同，才用单位价对比；
+核心是「可比性」：只有双方规格都解析成功且可比口径相同，才用单位价对比；
 否则降级为标价对比并在报告中标注，避免给出误导性的价差结论。
+
+其次是「可信度」：跟价基准只取已确认的匹配，产出正式建议。只有排除待复核
+匹配后没有基准时，才带上它们计算，产出待确认建议 —— 不进高优清单，
+避免因错配而错误降价。
 """
 
 from __future__ import annotations
 
-from ..models import Action, CompareRow, MatchPair, Product, measure_mismatch_note, same_measure
+from ..models import (
+    Action,
+    CompareRow,
+    MatchPair,
+    Product,
+    SuggestionTier,
+    measure_mismatch_note,
+    same_measure,
+)
 
 
 def _pick_benchmark(
@@ -63,32 +75,20 @@ def _decide_action(diff_rate: float | None, thresholds: dict) -> Action:
     return Action.WATCH
 
 
-def build_row(
-    self_product: Product,
-    rivals: dict[str, MatchPair],
-    cfg: dict,
-) -> CompareRow:
-    """为一个我方商品生成比价行。"""
-    c_cfg = cfg.get("compare", {})
-    mode = c_cfg.get("benchmark", "min")
-    thresholds = c_cfg.get("thresholds", {})
-
-    row = CompareRow(self_product=self_product, rivals=rivals)
-
-    if self_product.price is None:
-        row.notes.append("我方缺少价格")
-        return row
-
+def _price_against(
+    row: CompareRow, rivals: dict[str, MatchPair], mode: str, thresholds: dict
+) -> bool:
+    """用给定的竞品集合计算基准与价差，写入 row。没有可用基准返回 False。"""
+    self_product = row.self_product
     bench_key, bench = _pick_benchmark(rivals, self_product, mode)
     if bench is None:
-        row.notes.append("无有效竞品匹配")
-        return row
+        return False
 
     row.benchmark_platform = bench_key
     row.benchmark_price = bench.price
     row.benchmark_unit_price = bench.unit_price
 
-    # avg 模式：基准价取所有匹配竞品的均值，bench 仅作为代表平台展示
+    # avg 模式：基准价取参与竞品的均值，bench 仅作为代表平台展示
     if mode == "avg":
         prices = [
             p.rival_product.price
@@ -134,12 +134,50 @@ def build_row(
             row.notes.append(f"{measure_mismatch_note(self_product.spec, bench.spec)}，按标价对比")
 
     row.action = _decide_action(row.diff_rate, thresholds)
+    return True
 
-    # 低置信匹配的比价结论不可全信，提醒复核
-    if any(p.need_review for p in rivals.values() if p.matched):
-        row.notes.append("存在待复核的匹配关系")
 
+def build_row(
+    self_product: Product,
+    rivals: dict[str, MatchPair],
+    cfg: dict,
+) -> CompareRow:
+    """为一个我方商品生成比价行。"""
+    c_cfg = cfg.get("compare", {})
+    mode = c_cfg.get("benchmark", "min")
+    thresholds = c_cfg.get("thresholds", {})
+
+    row = CompareRow(self_product=self_product, rivals=rivals)
+
+    if self_product.price is None:
+        row.notes.append("我方缺少价格")
+        return row
+
+    confirmed = {k: p for k, p in rivals.items() if p.confirmed}
+    pending = {k: p for k, p in rivals.items() if p.matched and p.need_review}
+
+    # 正式建议：只用已确认的竞品
+    if _price_against(row, confirmed, mode, thresholds):
+        if pending:
+            row.notes.append(f"{len(pending)} 个待复核竞品未参与基准")
+        return row
+
+    # 待确认建议：带上待复核竞品才有基准
+    if pending and _price_against(row, {**confirmed, **pending}, mode, thresholds):
+        row.tier = SuggestionTier.TENTATIVE
+        row.depends_on = _dependencies(row, pending, mode)
+        row.notes.append("依赖待复核匹配，确认后转为正式建议")
+        return row
+
+    row.notes.append("无有效竞品匹配")
     return row
+
+
+def _dependencies(row: CompareRow, pending: dict[str, MatchPair], mode: str) -> list[str]:
+    """待确认建议依赖哪些待复核匹配：min/指定平台只依赖基准平台，avg 依赖全部参与者。"""
+    if mode == "avg":
+        return [k for k, p in pending.items() if p.rival_product.price is not None]
+    return [row.benchmark_platform] if row.benchmark_platform in pending else []
 
 
 def build_rows(

@@ -78,6 +78,13 @@ class Action(str, Enum):
     NO_DATA = "数据不足"
 
 
+class SuggestionTier(str, Enum):
+    """建议可信度。待确认建议依赖尚未人工确认的匹配，不进入高优清单。"""
+
+    FORMAL = "正式"
+    TENTATIVE = "待确认"
+
+
 @dataclass
 class Spec:
     """从商品标题解析出的规格。
@@ -249,3 +256,11 @@ class CompareRow:
     action: Action = Action.NO_DATA
     comparable: bool = False         # 是否基于单位价可比（否则仅比标价）
     notes: list[str] = field(default_factory=list)
+
+    tier: SuggestionTier = SuggestionTier.FORMAL
+    # 待确认建议所依赖的待复核匹配：平台 key 列表
+    depends_on: list[str] = field(default_factory=list)
+
+    @property
+    def formal(self) -> bool:
+        return self.tier is SuggestionTier.FORMAL
