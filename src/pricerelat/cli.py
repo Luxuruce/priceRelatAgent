@@ -6,6 +6,7 @@
     python run.py trigger   # 调影刀 OpenAPI 触发机器人任务
     python run.py fetch     # 从云采集 API（八爪鱼 / Apify / Firecrawl 等）拉取数据
     python run.py demo      # 用样例数据跑通全流程
+    python run.py relations # 导出匹配关系库，供排查
 """
 
 from __future__ import annotations
@@ -22,8 +23,9 @@ import yaml
 from .compare.engine import build_rows
 from .ingest.file_collector import FileCollector
 from .matching.pipeline import match_platform
-from .models import Product
+from .models import Product, RelationStatus
 from .report import html as report_html
+from .store import Store, current_period
 
 logger = logging.getLogger("pricerelat")
 
@@ -51,6 +53,14 @@ def load_config(path: str | Path) -> dict:
 def _resolve(path: str | Path) -> Path:
     p = Path(path)
     return p if p.is_absolute() else ROOT / p
+
+
+def open_store(cfg: dict) -> Store | None:
+    """打开关系库。store.enabled 为 false 时返回 None，每次从零匹配（V1 行为）。"""
+    s_cfg = cfg.get("store", {})
+    if not s_cfg.get("enabled", True):
+        return None
+    return Store(_resolve(s_cfg.get("path", "data/state/pricerelat.db")))
 
 
 def collect_all(cfg: dict) -> tuple[list[Product], dict[str, list[Product]]]:
@@ -84,18 +94,22 @@ def _export_review(rows, cfg: dict) -> Path | None:
         for platform, pair in row.rivals.items():
             if not pair.need_review:
                 continue
+            target = pair.review_target
             records.append(
                 {
                     "我方SKU": row.self_product.sku_id,
                     "我方商品": row.self_product.title,
                     "我方规格": row.self_product.spec.display(),
                     "竞品平台": platform,
-                    "竞品商品": pair.rival_product.title if pair.matched else "（判定为不匹配）",
-                    "竞品规格": pair.rival_product.spec.display() if pair.matched else "",
+                    "竞品SKU": target.sku_id if target else "",
+                    "竞品商品": target.title if target else "（无候选）",
+                    "竞品规格": target.spec.display() if target else "",
                     "匹配层级": pair.level.value,
                     "相似度": round(pair.score, 1),
                     "置信度": round(pair.confidence, 2),
-                    "判定依据": pair.reason,
+                    "判定依据": pair.reason if pair.matched else f"{pair.reason}（判定为不匹配）",
+                    "进入复核原因": pair.review_reason,
+                    "变更说明": pair.change_note,
                     "人工确认": "",  # 留空供人工填写：确认 / 否决 / 改配SKU
                 }
             )
@@ -138,17 +152,15 @@ def cmd_compare(args, cfg: dict) -> int:
         len(self_products), parsed, parsed / len(self_products) * 100,
     )
 
-    # ---- 逐平台匹配 ----
-    matches = {}
-    for c in cfg.get("competitors", []):
-        key, name = c["key"], c["name"]
-        items = rivals.get(key, [])
-        if not items:
-            logger.warning("[%s] 无商品数据，跳过", name)
-            continue
-        pairs, stats = match_platform(self_products, items, cfg)
-        matches[key] = pairs
-        logger.info("[%s] %s", name, stats.summary())
+    period = getattr(args, "period", None) or current_period()
+    store = open_store(cfg)
+    try:
+        matches = _match_all(self_products, rivals, cfg, store, period)
+        if store is not None:
+            store.commit()
+    finally:
+        if store is not None:
+            store.close()
 
     if not matches:
         print("错误：没有任何竞品数据。", file=sys.stderr)
@@ -164,6 +176,7 @@ def cmd_compare(args, cfg: dict) -> int:
     priced = [r for r in rows if r.diff_rate is not None]
     higher = [r for r in priced if r.diff_rate > 0]
     print("\n" + "=" * 56)
+    print(f"比价期次：{period}")
     print(f"比价完成：{len(rows)} 个商品，{len(priced)} 个产出有效价差")
     if priced:
         avg = sum(r.diff_rate for r in priced) / len(priced)
@@ -172,6 +185,40 @@ def cmd_compare(args, cfg: dict) -> int:
     if review_path:
         print(f"待复核清单：{review_path}")
     print("=" * 56)
+    return 0
+
+
+def _match_all(self_products, rivals, cfg: dict, store: Store | None, period: str) -> dict:
+    """逐平台匹配。启用关系库时先保存本期采集快照，再查库复用已确认的关系。"""
+    if store is not None:
+        store.record_observations(period, SELF_PLATFORM, self_products)
+
+    matches = {}
+    for c in cfg.get("competitors", []):
+        key, name = c["key"], c["name"]
+        items = rivals.get(key, [])
+        if not items:
+            logger.warning("[%s] 无商品数据，跳过", name)
+            continue
+        if store is not None:
+            store.record_observations(period, key, items)
+        pairs, stats = match_platform(self_products, items, cfg, store=store, period=period)
+        matches[key] = pairs
+        logger.info("[%s] %s", name, stats.summary())
+    return matches
+
+
+def cmd_relations(args, cfg: dict) -> int:
+    """导出关系库。不跑比价，供排查匹配问题。"""
+    store = open_store(cfg)
+    if store is None:
+        print("关系库未启用（config.yaml 中 store.enabled 为 false）", file=sys.stderr)
+        return 1
+    status = RelationStatus(args.status) if args.status else None
+    out = _resolve(args.out or "data/output/匹配关系库.csv")
+    with store:
+        n = store.export_relations(out, status=status)
+    print(f"已导出 {n} 条关系：{out}")
     return 0
 
 
@@ -281,6 +328,8 @@ def cmd_demo(args, cfg: dict) -> int:
         shutil.copy(f, inbox / f.name)
     print(f"已载入 {len(files)} 份样例数据\n")
 
+    # 样例数据用独立的关系库，不污染正式关系库
+    cfg = {**cfg, "store": {**cfg.get("store", {}), "path": "data/state/demo.db"}}
     return cmd_compare(args, cfg)
 
 
@@ -296,7 +345,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("collect", help="从 inbox 导入 RPA 采集结果并统计")
     p_compare = sub.add_parser("compare", help="匹配 + 比价 + 生成报告")
     p_compare.add_argument("--fetch", action="store_true", help="比价前先从云采集 API 拉取数据")
-    sub.add_parser("demo", help="用样例数据跑通全流程")
+    p_compare.add_argument("--period", help="比价期次，如 2026-W40；默认取当天所在的 ISO 周")
+    p_demo = sub.add_parser("demo", help="用样例数据跑通全流程")
+    p_demo.add_argument("--period", help="比价期次，默认取当天所在的 ISO 周")
+
+    p_rel = sub.add_parser("relations", help="导出匹配关系库（不跑比价）")
+    p_rel.add_argument("--status", choices=[s.value for s in RelationStatus], help="只导出指定状态")
+    p_rel.add_argument("--out", help="导出路径，默认 data/output/匹配关系库.csv")
 
     p_fetch = sub.add_parser("fetch", help="从云采集 API 拉取数据到 inbox")
     p_fetch.add_argument("--source", help="只执行指定名称的数据源（忽略 enabled）")
@@ -319,5 +374,6 @@ def main(argv: list[str] | None = None) -> int:
         "trigger": cmd_trigger,
         "fetch": cmd_fetch,
         "demo": cmd_demo,
+        "relations": cmd_relations,
     }
     return handlers[args.command](args, cfg)

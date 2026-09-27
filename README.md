@@ -96,8 +96,17 @@ export ANTHROPIC_API_KEY=sk-ant-...
 | `run.py trigger --robot <UUID>` | 触发影刀机器人任务 |
 | `run.py fetch [--source <名称>]` | 从云采集 API 拉取数据到 inbox |
 | `run.py compare --fetch` | 先拉取云采集数据再比价 |
+| `run.py relations [--status 已确认]` | 导出匹配关系库，不跑比价 |
 
 加 `-v` 看详细日志，加 `-c <路径>` 指定配置文件。
+
+### 匹配关系库
+
+比价结果会沉淀到 `data/state/pricerelat.db`（SQLite）。每个「我方 SKU × 竞品平台」先查关系库：
+已确认或待复核的关系直接复用，不再跑 L1-L3；人工否决过的竞品不会再被推荐；
+竞品标题或规格变了（只改营销词不算），关系转回待复核。已确认的竞品连续 3 期（ISO 周）
+未采集到则置为失效并重新匹配。`compare --period 2026-W40` 可指定期次，同一周重跑覆盖本期。
+`demo` 使用独立的 `data/state/demo.db`，不影响正式关系库。
 
 ---
 

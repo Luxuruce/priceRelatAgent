@@ -50,6 +50,24 @@ class MatchLevel(str, Enum):
     NONE = "未匹配"
 
 
+class RelationStatus(str, Enum):
+    """匹配关系在关系库中的状态。只有「已确认」的关系能产出正式调价建议。"""
+
+    CONFIRMED = "已确认"
+    REJECTED = "已否决"
+    PENDING = "待复核"
+    INVALID = "失效"
+
+
+class ReviewReason(str, Enum):
+    """进入人工复核的原因，写入复核表供专员判断优先级。"""
+
+    GRAY_ZONE = "灰区"
+    AI_LOW_CONFIDENCE = "AI 低置信"
+    AI_UNCONFIRMED = "AI 判定待确认"
+    INFO_CHANGED = "商品信息变更"
+
+
 class Action(str, Enum):
     """比价结论给出的建议动作。"""
 
@@ -191,9 +209,27 @@ class MatchPair:
     reason: str = ""                 # 匹配依据，人工复核时看这个
     need_review: bool = False
 
+    # --- 关系库相关（未启用关系库时保持默认值） ---
+    status: RelationStatus | None = None  # 该匹配在关系库中的状态
+    review_reason: str = ""          # 进入复核的原因，见 ReviewReason
+    change_note: str = ""            # 商品信息变更时的前后对比
+    from_store: bool = False         # 是否直接复用关系库，未经过 L1-L3
+    # AI 低置信判定为「不匹配」时，保留被否的候选供人工复核
+    candidate: Product | None = None
+
     @property
     def matched(self) -> bool:
         return self.rival_product is not None
+
+    @property
+    def confirmed(self) -> bool:
+        """可作为正式调价依据的匹配：已匹配且无需复核。"""
+        return self.matched and not self.need_review
+
+    @property
+    def review_target(self) -> Product | None:
+        """复核对象：匹配到的竞品，或被 AI 低置信否掉的候选。"""
+        return self.rival_product or self.candidate
 
 
 @dataclass
